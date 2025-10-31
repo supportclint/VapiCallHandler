@@ -2,13 +2,21 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const bodyParser = require('body-parser');
-const twilio = require('twilio'); // Require Twilio only once at the top
+const twilio = require('twilio');
+const cors = require('cors'); // <-- ADD THIS LINE
 const { VoiceResponse } = twilio.twiml;
 
 const app = express();
-const PORT = process.env.PORT || 3000; // Use Render's port or 3000 for local
+const PORT = process.env.PORT || 3000;
 
 // --- Middleware ---
+// ⬇️ ADD THIS CORS MIDDLEWARE SECTION ⬇️
+// This allows your dashboard at 'app.taps-marimbe.me' to make requests to this server.
+app.use(cors({
+  origin: 'https://app.taps-marimbe.me'
+}));
+// ⬆️ END OF CORS SECTION ⬆️
+
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
