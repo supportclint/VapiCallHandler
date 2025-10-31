@@ -114,7 +114,7 @@ app.post('/conference', (req, res) => {
 // --- /announce (TWIML for Fallback) ---
 app.post('/announce', (req, res) => {
     const twiml = new VoiceResponse();
-    twiml.say('I apologize, but all consultants are currently busy. Please call back in a few minutes. Goodbye.');
+    twiml.say('I apologize, but our consultants are currently busy. Please call back in a few minutes. Thank you for your understanding, goodbye.');
     twiml.hangup(); 
     res.type('text/xml').send(twiml.toString());
 });
