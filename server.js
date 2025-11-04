@@ -2,33 +2,34 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const bodyParser = require('body-parser');
-const twilio = require('twilio'); 
-const { VoiceResponse } = twilio.twiml; 
+const twilio = require('twilio');
+const { VoiceResponse } = twilio.twiml;
 
 const app = express();
 const PORT = 3000; // Local testing port
 
 // Middleware for parsing requests
 app.use(bodyParser.urlencoded({ extended: false }));
-app.use(bodyParser.json()); 
+app.use(bodyParser.json());
 
 // Load environment variables (from .env)
 const {
     VAPI_PRIVATE_API_KEY, VAPI_ASSISTANT_ID, VAPI_PHONE_NUMBER_ID,
     TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
-    FROM_NUMBER, TO_SPECIALIST_NUMBER
+    FROM_NUMBER,
+    CONSULTANT_NUMBER, HR_NUMBER, IT_NUMBER
 } = process.env;
 
 const VAPI_BASE_URL = 'https://api.vapi.ai/call';
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
-let globalCustomerCallSid = ""; 
+let globalCustomerCallSid = "";
 
 // --- /inbound_call (Initial AI Connection) ---
 app.post('/inbound_call', async (req, res) => {
-    globalCustomerCallSid = req.body.CallSid; 
-    const callerNumber = req.body.Caller; 
-    
+    globalCustomerCallSid = req.body.CallSid;
+    const callerNumber = req.body.Caller;
+
     try {
         const vapiResponse = await axios.post(VAPI_BASE_URL, {
             phoneCallProviderBypassEnabled: true,
@@ -36,7 +37,7 @@ app.post('/inbound_call', async (req, res) => {
             assistantId: VAPI_ASSISTANT_ID,
             customer: { number: callerNumber },
         }, {
-            headers: { 
+            headers: {
                 'Authorization': `Bearer ${VAPI_PRIVATE_API_KEY}`,
                 'Content-Type': 'application/json',
             }
@@ -55,18 +56,26 @@ app.post('/inbound_call', async (req, res) => {
 // --- /connect (VAPI TOOL WEBHOOK WITH MULTIPLE DEPARTMENTS) ---
 app.post('/connect', async (req, res) => {
     try {
-        // Extract the department from the request (coming from Vapi)
+        // Optional: Basic protection (only allow from Vapi)
+        const allowedOrigin = "api.vapi.ai";
+        const originHeader = req.get('origin') || req.get('referer') || '';
+        if (!originHeader.includes(allowedOrigin)) {
+            console.warn("Unauthorized attempt to trigger /connect");
+            return res.status(403).json({ error: "Unauthorized source" });
+        }
+
+        // Extract department info from Vapi tool request
         const department = (req.body.department || 'consultant').toLowerCase();
 
-        // Define routing directory
+        // Define department routing via .env
         const departmentNumbers = {
-            consultant: '+61473016152',
-            hr: '+639770880080',
-            it: '+639554134947',
+            consultant: CONSULTANT_NUMBER,
+            hr: HR_NUMBER,
+            it: IT_NUMBER,
         };
 
-        // Default fallback if department not recognized
-        const targetNumber = departmentNumbers[department] || departmentNumbers.consultant;
+        // Fallback if department missing
+        const targetNumber = departmentNumbers[department] || CONSULTANT_NUMBER;
 
         console.log(`🔁 Transfer requested to: ${department} (${targetNumber})`);
 
@@ -75,13 +84,13 @@ app.post('/connect', async (req, res) => {
         const conferenceUrl = `${baseUrl}/conference`;
         const statusCallbackUrl = `${baseUrl}/participant-status`;
 
-        // 1. Put the current customer on hold (conference room)
+        // 1️⃣ Put the customer on hold (into conference)
         await twilioClient.calls(globalCustomerCallSid).update({
             url: conferenceUrl,
             method: 'POST',
         });
 
-        // 2. Dial the selected department
+        // 2️⃣ Dial the selected department
         await twilioClient.calls.create({
             to: targetNumber,
             from: FROM_NUMBER,
@@ -91,7 +100,7 @@ app.post('/connect', async (req, res) => {
             statusCallbackMethod: 'POST',
         });
 
-        // ✅ Send confirmation back to Vapi
+        // ✅ Respond to Vapi
         return res.json({
             results: [{
                 toolCallId: req.body.toolCallList?.[0]?.id || 'transfer_1',
@@ -111,14 +120,13 @@ app.post('/connect', async (req, res) => {
 });
 
 
-
-// --- /conference (TWIML for Merging) ---
+// --- /conference (TWIML for Merging Calls) ---
 app.post('/conference', (req, res) => {
     const twiml = new VoiceResponse();
     twiml.dial().conference(
         {
-            startConferenceOnEnter: true, 
-            endConferenceOnExit: true,   
+            startConferenceOnEnter: true,
+            endConferenceOnExit: true,
         },
         'interactive_cue_room'
     );
@@ -126,16 +134,16 @@ app.post('/conference', (req, res) => {
 });
 
 
-// --- /announce (TWIML for Fallback) ---
+// --- /announce (TWIML Fallback Message) ---
 app.post('/announce', (req, res) => {
     const twiml = new VoiceResponse();
     twiml.say('I apologize, but our consultants are currently busy. Please call back in a few minutes. Thank you for your understanding, goodbye.');
-    twiml.hangup(); 
+    twiml.hangup();
     res.type('text/xml').send(twiml.toString());
 });
 
 
-// --- /participant-status (The Fallback Logic) ---
+// --- /participant-status (Fallback Handling for Missed Calls) ---
 app.post('/participant-status', async (req, res) => {
     const callStatus = req.body.CallStatus;
     const protocol = req.headers['x-forwarded-proto'] || 'http';
@@ -144,21 +152,20 @@ app.post('/participant-status', async (req, res) => {
 
     if (['no-answer', 'busy', 'failed'].includes(callStatus)) {
         try {
-            // Redirect customer's call to the announcement TwiML
             await twilioClient.calls(globalCustomerCallSid).update({
-                url: announceUrl, 
+                url: announceUrl,
                 method: 'POST',
             });
         } catch (error) {
-            console.error("Failed to redirect customer call for announcement:", error.message);
+            console.error("Failed to redirect customer call:", error.message);
         }
     }
-    return res.sendStatus(200); 
+    return res.sendStatus(200);
 });
 
 
-// Start the server
+// --- Start the server ---
 app.listen(PORT, () => {
-    console.log(`\nServer running on port ${PORT}`);
-    console.log(`Local URL for ngrok: http://localhost:${PORT}`);
+    console.log(`\n🚀 Server running on port ${PORT}`);
+    console.log(`🌐 Local URL for ngrok: http://localhost:${PORT}`);
 });
