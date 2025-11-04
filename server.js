@@ -52,49 +52,64 @@ app.post('/inbound_call', async (req, res) => {
 });
 
 
-// --- /connect (VAPI TOOL WEBHOOK) ---
+// --- /connect (VAPI TOOL WEBHOOK WITH MULTIPLE DEPARTMENTS) ---
 app.post('/connect', async (req, res) => {
-    // This URL is hit when the AI calls 'transfer_to_specialist'
     try {
+        // Extract the department from the request (coming from Vapi)
+        const department = (req.body.department || 'consultant').toLowerCase();
+
+        // Define routing directory
+        const departmentNumbers = {
+            consultant: '+61473016152',
+            hr: '+639770880080',
+            it: '+639554134947',
+        };
+
+        // Default fallback if department not recognized
+        const targetNumber = departmentNumbers[department] || departmentNumbers.consultant;
+
+        console.log(`🔁 Transfer requested to: ${department} (${targetNumber})`);
+
         const protocol = req.headers['x-forwarded-proto'] || 'http';
         const baseUrl = `${protocol}://${req.get('host')}`;
         const conferenceUrl = `${baseUrl}/conference`;
         const statusCallbackUrl = `${baseUrl}/participant-status`;
 
-        // 1. Update the Customer's Inbound Call (Puts customer on hold)
+        // 1. Put the current customer on hold (conference room)
         await twilioClient.calls(globalCustomerCallSid).update({
             url: conferenceUrl,
             method: 'POST',
         });
 
-        // 2. Dial the Specialist (Outbound Call)
+        // 2. Dial the selected department
         await twilioClient.calls.create({
-            to: TO_SPECIALIST_NUMBER,
+            to: targetNumber,
             from: FROM_NUMBER,
-            url: conferenceUrl, 
+            url: conferenceUrl,
             method: 'POST',
-            statusCallback: statusCallbackUrl, 
+            statusCallback: statusCallbackUrl,
             statusCallbackMethod: 'POST',
         });
 
-        // Respond to Vapi (Tool success)
-        return res.json({ 
-            results: [{ 
-                toolCallId: req.body.toolCallList[0].id, // Use toolCallList[0].id for parsing
-                result: "Transfer initiated." 
+        // ✅ Send confirmation back to Vapi
+        return res.json({
+            results: [{
+                toolCallId: req.body.toolCallList?.[0]?.id || 'transfer_1',
+                result: `Transfer initiated to ${department}.`
             }]
         });
 
     } catch (err) {
-        console.error('Transfer failed:', err.message);
-        return res.status(500).json({ 
-            results: [{ 
-                toolCallId: req.body.toolCallList[0].id,
-                error: "Transfer failure." 
+        console.error('❌ Transfer failed:', err.message);
+        return res.status(500).json({
+            results: [{
+                toolCallId: req.body.toolCallList?.[0]?.id || 'transfer_error',
+                error: 'Transfer failure.'
             }]
         });
     }
 });
+
 
 
 // --- /conference (TWIML for Merging) ---
